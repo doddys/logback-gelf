@@ -222,7 +222,11 @@ public class GelfChunkingOutputStream extends OutputStream {
         maxChunksReached = false;
         
         if (isTimeToReconnect()) {
-            connect();
+            try {
+                connect();
+            } catch (Exception e) {
+                logger.error("Unable to re-establish connection to " + remoteHost + ", error=" + e.getMessage(), e);
+            }
         }
     }
 }
