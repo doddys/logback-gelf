@@ -42,10 +42,10 @@ public class GelfUDPAppender<E> extends OutputStreamAppender<E> {
                     + name
                     + " For more information, please visit http://logback.qos.ch/codes.html#socket_no_host");
         }
-        InetAddress address = null;
+       
         if (errorCount == 0) {
             try {
-                address = InternetUtils.getInetAddress(remoteHost);
+                InternetUtils.getInetAddress(remoteHost);
             } catch (Exception e) {
                 addError(e.getMessage());
                 errorCount++;
@@ -76,7 +76,7 @@ public class GelfUDPAppender<E> extends OutputStreamAppender<E> {
         }
 
         if (errorCount == 0) {
-            GelfChunkingOutputStream os = new GelfChunkingOutputStream(address, port, maxPacketSize, messageIdProvider);
+            GelfChunkingOutputStream os = new GelfChunkingOutputStream(remoteHost, port, maxPacketSize, messageIdProvider);
             try {
                 os.start();
                 this.setOutputStream(os);

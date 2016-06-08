@@ -3,6 +3,8 @@ package me.moocar.logbackgelf;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An OutputStream that sends bytes as UDP packets to a [GELF](https://www.graylog.org/resources/gelf/) compatible
@@ -13,6 +15,10 @@ import java.net.*;
  * Note that this class is NOT thread safe. A sequential process should call flush() before another starts writing.
  */
 public class GelfChunkingOutputStream extends OutputStream {
+    
+    private static final Logger logger = LoggerFactory.getLogger(GelfChunkingOutputStream.class);
+    
+    private static final int DEFAULT_MAX_SOCKET_AGE_MS = 3 * 60 * 1000; // 3 min.
 
     // GELF specifies a maximum number of chunks. Chunks will be dropped on the server once more than MAX_CHUNKS are
     // sent to the server for a particular message
@@ -32,7 +38,8 @@ public class GelfChunkingOutputStream extends OutputStream {
     private final int maxPacketSize;
     private final MessageIdProvider messageIdProvider;
 
-    private final InetAddress address;
+    // private final InetAddress address;
+    private final String remoteHost;
     private final int port;
     private DatagramSocket socket;
 
@@ -47,6 +54,16 @@ public class GelfChunkingOutputStream extends OutputStream {
     private boolean maxChunksReached = false;
     // Once chunking is turned on, this will have the messageID that should be used for all of this message's chunks
     private byte[] messageID;
+    
+    // The time when the datagramsocket was created.
+    private long socketCreatedTime = System.currentTimeMillis();
+    
+    // How long to keep sockets alive, if the current system time - socketCreateTime is greater than
+    // this delta, then the socket connection will be re-established after a call to flush().
+    private final int MAX_SOCKET_LIFE_MS = System.getProperty("me.moocar.logbackgelf.max-connection-age.ms") != null
+            ? Integer.parseInt(System.getProperty("me.moocar.logbackgelf.max-connection-age.ms"))
+            : DEFAULT_MAX_SOCKET_AGE_MS;
+    
 
     /**
      * Create a new GelfChunkingOutputStream
@@ -56,19 +73,39 @@ public class GelfChunkingOutputStream extends OutputStream {
      * @param maxPacketSize The maximum number of bytes allowed before chunking begins
      * @param messageIdProvider A object that generates totally unique (for this machine) 8-byte message IDs.
      */
-    public GelfChunkingOutputStream(InetAddress address, int port, int maxPacketSize, MessageIdProvider messageIdProvider) {
-        this.address = address;
+    public GelfChunkingOutputStream(String remoteHost, int port, int maxPacketSize, MessageIdProvider messageIdProvider) {
+        this.remoteHost = remoteHost;
         this.port = port;
         this.maxPacketSize = maxPacketSize;
         this.messageIdProvider = messageIdProvider;
         this.chunks = new byte[MAX_CHUNKS][maxPacketSize];
         this.packetBytes = new byte[maxPacketSize];
+        
+        logger.info("moocar.Gelf - GelfChunkingOutputStream initialized: host={}, port={}, maxPacketSize={}",
+                this.remoteHost, this.port, this.maxPacketSize);
     }
 
 
     public void start() throws SocketException, UnknownHostException {
-        this.socket = new DatagramSocket();
-        this.socket.connect(address, port);
+        connect();
+    }
+    
+    private void connect() throws SocketException, UnknownHostException {
+        logger.info("moocar.Gelf - establishing DatagramSocket connection to: {}", remoteHost);
+                
+        InetAddress address = InternetUtils.getInetAddress(remoteHost);
+        
+        DatagramSocket oldSocket = socket;
+        DatagramSocket newSocket = new DatagramSocket();
+        newSocket.connect(address, port);
+        
+        this.socket = newSocket;
+        this.socketCreatedTime = System.currentTimeMillis();
+        
+        if (oldSocket != null) {
+            logger.info("moocar.Gelf - New connection establed to {}.  Destroying stale connection.", remoteHost);
+            oldSocket.close();
+        }
     }
 
     @Override
@@ -152,7 +189,10 @@ public class GelfChunkingOutputStream extends OutputStream {
         } finally {
             reset();
         }
-
+    }
+    
+    private boolean isTimeToReconnect() {
+        return (System.currentTimeMillis() - this.socketCreatedTime) > MAX_SOCKET_LIFE_MS;
     }
 
     private void flushChunked() throws IOException {
@@ -180,5 +220,9 @@ public class GelfChunkingOutputStream extends OutputStream {
         chunkIndex = 0;
         chunked = false;
         maxChunksReached = false;
+        
+        if (isTimeToReconnect()) {
+            connect();
+        }
     }
 }
